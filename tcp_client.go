@@ -144,12 +144,53 @@ func (c *TCPClient) reconnect() error {
 
 // ----------------------------------------------------------------------------
 
+// isConnectionRefused checks if the error is ECONNREFUSED.
+func isConnectionRefused(err error) bool {
+	if opErr, ok := err.(*net.OpError); ok {
+		if errno, ok := opErr.Err.(syscall.Errno); ok {
+			return errno == syscall.ECONNREFUSED
+		}
+	}
+	return false
+}
+
+// isDisconnectError checks if the error indicates a disconnection.
+func isDisconnectError(err error) bool {
+	if err == io.EOF {
+		return true
+	}
+	if opErr, ok := err.(*net.OpError); ok {
+		// Try to get the underlying syscall error
+		if errno, ok := opErr.Err.(syscall.Errno); ok {
+			// Unix errors
+			if errno == syscall.ECONNRESET || errno == syscall.EPIPE {
+				return true
+			}
+			// Windows errors (WSAECONNRESET = 10054, WSAECONNABORTED = 10053)
+			if errno == 10054 || errno == 10053 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ----------------------------------------------------------------------------
+
 // Read wraps net.TCPConn's Read method with reconnect capabilities.
 //
 // It will return ErrMaxRetries if the retry limit is reached.
 func (c *TCPClient) Read(b []byte) (int, error) {
 	c.lock.RLock()
-	defer c.lock.RUnlock()
+	locked := true
+	defer func() {
+		if locked {
+			c.lock.RUnlock()
+		}
+		if r := recover(); r != nil {
+			panic(r)
+		}
+	}()
 
 	disconnected := false
 	t := c.retryInterval
@@ -158,43 +199,29 @@ func (c *TCPClient) Read(b []byte) (int, error) {
 			time.Sleep(t)
 			t *= 2
 			c.lock.RUnlock()
+			locked = false
 			if err := c.reconnect(); err != nil {
-				switch e := err.(type) {
-				case *net.OpError:
-					if e.Err.(syscall.Errno) == syscall.ECONNREFUSED {
-						disconnected = true
-						c.lock.RLock()
-						continue
-					}
-					return -1, err
-				default:
-					return -1, err
+				if isConnectionRefused(err) {
+					disconnected = true
+					c.lock.RLock()
+					locked = true
+					continue
 				}
-			} else {
-				disconnected = false
+				return -1, err
 			}
+			disconnected = false
 			c.lock.RLock()
+			locked = true
 		}
 		n, err := c.TCPConn.Read(b)
 		if err == nil {
 			return n, err
 		}
-		switch e := err.(type) {
-		case *net.OpError:
-			if e.Err.(syscall.Errno) == syscall.ECONNRESET ||
-				e.Err.(syscall.Errno) == syscall.EPIPE {
-				disconnected = true
-			} else {
-				return n, err
-			}
-		default:
-			if err.Error() == "EOF" {
-				disconnected = true
-			} else {
-				return n, err
-			}
+		if isDisconnectError(err) {
+			disconnected = true
+		} else {
+			return n, err
 		}
-		t *= 2
 	}
 
 	return -1, ErrMaxRetries
@@ -205,53 +232,46 @@ func (c *TCPClient) Read(b []byte) (int, error) {
 // It will return ErrMaxRetries if the retry limit is reached.
 func (c *TCPClient) ReadFrom(r io.Reader) (int64, error) {
 	c.lock.RLock()
-	defer c.lock.RUnlock()
+	locked := true
+	defer func() {
+		if locked {
+			c.lock.RUnlock()
+		}
+		if r := recover(); r != nil {
+			panic(r)
+		}
+	}()
 
 	disconnected := false
-
 	t := c.retryInterval
 	for i := 0; i < c.maxRetries; i++ {
 		if disconnected {
 			time.Sleep(t)
 			t *= 2
 			c.lock.RUnlock()
+			locked = false
 			if err := c.reconnect(); err != nil {
-				switch e := err.(type) {
-				case *net.OpError:
-					if e.Err.(syscall.Errno) == syscall.ECONNREFUSED {
-						disconnected = true
-						c.lock.RLock()
-						continue
-					}
-					return -1, err
-				default:
-					return -1, err
+				if isConnectionRefused(err) {
+					disconnected = true
+					c.lock.RLock()
+					locked = true
+					continue
 				}
-			} else {
-				disconnected = false
+				return -1, err
 			}
+			disconnected = false
 			c.lock.RLock()
+			locked = true
 		}
 		n, err := c.TCPConn.ReadFrom(r)
 		if err == nil {
 			return n, err
 		}
-		switch e := err.(type) {
-		case *net.OpError:
-			if e.Err.(syscall.Errno) == syscall.ECONNRESET ||
-				e.Err.(syscall.Errno) == syscall.EPIPE {
-				disconnected = true
-			} else {
-				return n, err
-			}
-		default:
-			if err.Error() == "EOF" {
-				disconnected = true
-			} else {
-				return n, err
-			}
+		if isDisconnectError(err) {
+			disconnected = true
+		} else {
+			return n, err
 		}
-		t *= 2
 	}
 
 	return -1, ErrMaxRetries
@@ -262,46 +282,44 @@ func (c *TCPClient) ReadFrom(r io.Reader) (int64, error) {
 // It will return ErrMaxRetries if the retry limit is reached.
 func (c *TCPClient) Write(b []byte) (int, error) {
 	c.lock.RLock()
-	defer c.lock.RUnlock()
+	locked := true
+	defer func() {
+		if locked {
+			c.lock.RUnlock()
+		}
+		if r := recover(); r != nil {
+			panic(r)
+		}
+	}()
 
 	disconnected := false
-
 	t := c.retryInterval
 	for i := 0; i < c.maxRetries; i++ {
 		if disconnected {
 			time.Sleep(t)
 			t *= 2
 			c.lock.RUnlock()
+			locked = false
 			if err := c.reconnect(); err != nil {
-				switch e := err.(type) {
-				case *net.OpError:
-					if e.Err.(syscall.Errno) == syscall.ECONNREFUSED {
-						disconnected = true
-						c.lock.RLock()
-						continue
-					}
-					return -1, err
-				default:
-					return -1, err
+				if isConnectionRefused(err) {
+					disconnected = true
+					c.lock.RLock()
+					locked = true
+					continue
 				}
-			} else {
-				disconnected = false
+				return -1, err
 			}
+			disconnected = false
 			c.lock.RLock()
+			locked = true
 		}
 		n, err := c.TCPConn.Write(b)
 		if err == nil {
 			return n, err
 		}
-		switch e := err.(type) {
-		case *net.OpError:
-			if e.Err.(syscall.Errno) == syscall.ECONNRESET ||
-				e.Err.(syscall.Errno) == syscall.EPIPE {
-				disconnected = true
-			} else {
-				return n, err
-			}
-		default:
+		if isDisconnectError(err) {
+			disconnected = true
+		} else {
 			return n, err
 		}
 	}

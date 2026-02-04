@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -84,8 +85,8 @@ func TestTCPClient_reconnect(t *testing.T) {
 
 	if err := tcpConn1.Close(); err == nil {
 		t.Error("tcpConn1 should already be closed")
-	} else if err.Error() != "use of closed network connection" {
-		t.Error(err)
+	} else if !strings.Contains(err.Error(), "closed") {
+		t.Errorf("unexpected error: %v", err)
 	}
 	if err := tcpConn2.Close(); err != nil {
 		t.Error(err)

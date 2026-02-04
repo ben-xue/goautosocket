@@ -152,7 +152,6 @@ func (c *TCPClient) Read(b []byte) (int, error) {
 	defer c.lock.RUnlock()
 
 	disconnected := false
-
 	t := c.retryInterval
 	for i := 0; i < c.maxRetries; i++ {
 		if disconnected {
